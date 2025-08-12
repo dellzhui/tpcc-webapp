@@ -136,7 +136,8 @@ def orders():
 
         # Get warehouses for filter dropdown
         logger.info("   Fetching warehouses for dropdown...")
-        warehouses = analytics_service.get_warehouses()
+        warehouses_result = analytics_service.get_warehouses()
+        warehouses = warehouses_result.get("warehouses", []) if warehouses_result.get("success") else []
         logger.info(f"   ✅ Retrieved {len(warehouses)} warehouses")
 
         # Calculate pagination info
@@ -239,11 +240,12 @@ def inventory():
             f"   ✅ Retrieved {len(inventory_result.get('inventory', []))} inventory items out of {inventory_result.get('total_count', 0)} total"
         )
 
-        # Get warehouses for filter dropdown
+                # Get warehouses for filter dropdown
         logger.info("   Fetching warehouses for dropdown...")
-        warehouses = analytics_service.get_warehouses()
+        warehouses_result = analytics_service.get_warehouses()
+        warehouses = warehouses_result.get("warehouses", []) if warehouses_result.get("success") else []
         logger.info(f"   ✅ Retrieved {len(warehouses)} warehouses")
-
+        
         # Calculate pagination info
         total_count = inventory_result.get("total_count", 0)
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
@@ -314,11 +316,12 @@ def payments():
             f"   ✅ Retrieved {len(payments_result.get('payments', []))} payment records out of {payments_result.get('total_count', 0)} total"
         )
 
-        # Get warehouses for filter dropdown
+                # Get warehouses for filter dropdown
         logger.info("   Fetching warehouses for dropdown...")
-        warehouses = analytics_service.get_warehouses()
+        warehouses_result = analytics_service.get_warehouses()
+        warehouses = warehouses_result.get("warehouses", []) if warehouses_result.get("success") else []
         logger.info(f"   ✅ Retrieved {len(warehouses)} warehouses")
-
+        
         # Calculate pagination info
         total_count = payments_result.get("total_count", 0)
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
