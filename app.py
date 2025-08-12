@@ -83,11 +83,11 @@ def dashboard():
         # Get dashboard metrics
         logger.info("   Fetching dashboard metrics...")
         # breakpoint()
-        metrics = analytics_service.get_dashboard_metrics()
-        logger.info(f"   ✅ Dashboard metrics retrieved: {len(metrics)} metrics")
+        result = analytics_service.get_dashboard_metrics()
+        logger.info(f"   ✅ Dashboard metrics retrieved: {result}")
 
         return render_template(
-            "dashboard.html", metrics=metrics, provider=db_connector.get_provider_name()
+            "dashboard.html", metrics=result.get("metrics"), provider=db_connector.get_provider_name()
         )
     except Exception as e:
         logger.error(f"❌ Dashboard error: {str(e)}")

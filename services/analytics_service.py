@@ -114,6 +114,16 @@ class AnalyticsService:
                 logger.warning(f"Failed to get order count: {str(e)}")
                 metrics["total_orders"] = 0
 
+            # Get new order count
+            try:
+                result = self.connector.execute_query(
+                    "SELECT COUNT(*) as count FROM new_order"
+                )
+                metrics["new_orders"] = result[0]["count"] if result else 0
+            except Exception as e:
+                logger.warning(f"Failed to get order count: {str(e)}")
+                metrics["new_orders"] = 0
+
             # Get item count
             try:
                 result = self.connector.execute_query(
@@ -123,7 +133,18 @@ class AnalyticsService:
             except Exception as e:
                 logger.warning(f"Failed to get item count: {str(e)}")
                 metrics["total_items"] = 0
-
+            
+            # Get low stock item count
+            # try:
+            #     result = self.connector.execute_query(
+            #         "SELECT COUNT(*) as count FROM stock WHERE s_quantity < 50"
+            #     )
+            #     metrics["low_stock_items"] = result[0]["count"] if result else 0
+            # except Exception as e:
+            #     logger.warning(f"Failed to get low stock items count: {str(e)}")
+            #     metrics["low_stock_items"] = 0
+            
+            logger.warning("metrics is {}".format(metrics))
             return {
                 "success": True,
                 "provider": self.connector.get_provider_name(),

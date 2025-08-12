@@ -96,7 +96,6 @@ class PaymentService:
                 SELECT h.h_date, h.h_amount, h.h_data
                 FROM history h
                 WHERE h.h_c_w_id = %s AND h.h_c_d_id = %s AND h.h_c_id = %s
-                ORDER BY h.h_date DESC
                 LIMIT 10
             """
 
@@ -218,7 +217,6 @@ class PaymentService:
                 FROM history h
                 JOIN customer c ON c.c_w_id = h.h_c_w_id AND c.c_d_id = h.h_c_d_id AND c.c_id = h.h_c_id
                 JOIN warehouse w ON w.w_id = h.h_c_w_id
-                ORDER BY h.h_date DESC
                 LIMIT %s
             """
 
