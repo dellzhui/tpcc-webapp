@@ -134,15 +134,42 @@ class AnalyticsService:
                 logger.warning(f"Failed to get item count: {str(e)}")
                 metrics["total_items"] = 0
             
-            # Get low stock item count
-            # try:
-            #     result = self.connector.execute_query(
-            #         "SELECT COUNT(*) as count FROM stock WHERE s_quantity < 50"
-            #     )
-            #     metrics["low_stock_items"] = result[0]["count"] if result else 0
-            # except Exception as e:
-            #     logger.warning(f"Failed to get low stock items count: {str(e)}")
-            #     metrics["low_stock_items"] = 0
+            # Get low stock item count (threshold 50)
+            try:
+                result = self.connector.execute_query(
+                    "SELECT COUNT(*) as count FROM stock WHERE s_quantity < 50"
+                )
+                metrics["low_stock_items"] = result[0]["count"] if result else 0
+            except Exception as e:
+                logger.warning(f"Failed to get low stock items count: {str(e)}")
+                metrics["low_stock_items"] = 0
+            
+            # Orders in last 24 hours
+            try:
+                result = self.connector.execute_query(
+                    "SELECT COUNT(*) AS count FROM \"orders\" WHERE o_entry_d >= (CURRENT_TIMESTAMP - INTERVAL '24 hours')"
+                )
+                metrics["orders_last_24h"] = result[0]["count"] if result else 0
+            except Exception as e:
+                logger.warning(f"Failed to get orders last 24h: {str(e)}")
+                metrics["orders_last_24h"] = 0
+            
+            # Average order value
+            try:
+                avg_query = (
+                    "SELECT AVG(total_amount) as avg_amount FROM ("
+                    "  SELECT SUM(ol_amount) as total_amount"
+                    "  FROM order_line"
+                    "  GROUP BY ol_w_id, ol_d_id, ol_o_id"
+                    ") as order_totals"
+                )
+                avg_result = self.connector.execute_query(avg_query)
+                metrics["avg_order_value"] = (
+                    float(avg_result[0]["avg_amount"]) if avg_result and avg_result[0]["avg_amount"] is not None else 0.0
+                )
+            except Exception as e:
+                logger.warning(f"Failed to get average order value: {str(e)}")
+                metrics["avg_order_value"] = 0.0
             
             logger.warning("metrics is {}".format(metrics))
             return {
