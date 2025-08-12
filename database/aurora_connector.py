@@ -83,27 +83,21 @@ class AuroraDSQLConnector(BaseDatabaseConnector):
         """
         Generate a short-lived IAM DB auth token for Aurora DSQL (PostgreSQL-compatible endpoint).
         """
-        # Use the DSQL service to generate the correct connect token.
-        # - For the built-in admin role, use generate_db_connect_admin_auth_token
-        # - For a custom database role, use generate_db_connect_auth_token with username
         dsql_client = self._boto3.client("dsql", region_name=self.region)
 
-        # Prefer admin token when user is admin; otherwise generate a user token
+        # Admin role token vs. general connect token
         if str(self.db_user or "").lower() == "admin":
-            resp = dsql_client.generate_db_connect_admin_auth_token(
-                hostname=self.cluster_endpoint,
-                region=self.region,
-                expiresIn=3600
+            token = dsql_client.generate_db_connect_admin_auth_token(
+                Hostname=self.cluster_endpoint,
+                Region=self.region,
+                ExpiresIn=3600
             )
-            token = resp  # API returns a string token
         else:
-            resp = dsql_client.generate_db_connect_auth_token(
-                hostname=self.cluster_endpoint,
-                region=self.region,
-                username=self.db_user,
-                expiresIn=3600
+            token = dsql_client.generate_db_connect_auth_token(
+                Hostname=self.cluster_endpoint,
+                Region=self.region,
+                ExpiresIn=3600
             )
-            token = resp
 
         return token
 
