@@ -25,7 +25,7 @@ class AuroraDSQLConnector(BaseDatabaseConnector):
     def get_inventory_paginated(
         self,
         warehouse_id: Optional[int] = None,
-        threshold: Optional[int] = 10,
+        threshold: Optional[int] = 100,  # 提高默认阈值到100
         search: Optional[str] = None,
         limit: int = 100,
         page: int = 1,
@@ -62,9 +62,14 @@ class AuroraDSQLConnector(BaseDatabaseConnector):
             params_page.append(warehouse_id)
 
         if isinstance(threshold, int) and threshold is not None and threshold > 0:
-            where.append("s.s_quantity < %s")
-            params_total.append(threshold)
-            params_page.append(threshold)
+            # 如果threshold > 1000，显示所有库存；否则显示低于阈值的库存
+            if threshold > 1000:
+                # 显示所有库存，不添加数量限制
+                pass
+            else:
+                where.append("s.s_quantity < %s")
+                params_total.append(threshold)
+                params_page.append(threshold)
 
         if search:
             
@@ -74,8 +79,11 @@ class AuroraDSQLConnector(BaseDatabaseConnector):
             params_page.append(like)
 
         where_sql = " AND ".join(where)
+        # 检查是否真的没有过滤器：warehouse_id为None，没有搜索，且threshold要么为None，要么>1000（显示所有）
         no_filters = (
-            (warehouse_id is None) and (not search) and (not (isinstance(threshold, int) and threshold > 0))
+            (warehouse_id is None) and 
+            (not search) and 
+            (not (isinstance(threshold, int) and threshold > 0 and threshold <= 1000))
         )
 
         # Total count (try fast estimate when completely unfiltered)
@@ -217,7 +225,7 @@ class AuroraDSQLConnector(BaseDatabaseConnector):
             else:
                 raise
 
-        return {"items": rows, "total": total, "limit": limit, "page": page}
+        return {"payments": rows, "total_count": total, "limit": limit, "page": page, "has_next": (page * limit) < total, "has_prev": page > 1}
     """
     Amazon Aurora DSQL database connector for TPC-C application
 
@@ -1006,4 +1014,186 @@ class AuroraDSQLConnector(BaseDatabaseConnector):
             except Exception:
                 pass
             logger.error(f"New order transaction failed: {str(e)}")
+            return {"success": False, "error": str(e)}
+
+    def execute_payment(
+        self,
+        warehouse_id: int,
+        district_id: int,
+        customer_id: int,
+        amount: float,
+    ) -> Dict[str, Any]:
+        """
+        Execute TPC-C Payment transaction
+        
+        This method implements the TPC-C Payment transaction which:
+        1. Updates customer information (balance, payment stats)
+        2. Updates warehouse and district YTD statistics
+        3. Inserts a payment record into history table
+        
+        Args:
+            warehouse_id: Warehouse ID
+            district_id: District ID
+            customer_id: Customer ID
+            amount: Payment amount
+            
+        Returns:
+            Dict with success status and payment details
+        """
+        self._ensure_connection()
+        
+        try:
+            # Start transaction
+            with self.connection.cursor() as cur:
+                # Get customer information
+                customer_query = """
+                    SELECT c_first, c_middle, c_last, c_balance, c_ytd_payment, c_payment_cnt, c_credit, c_discount
+                    FROM customer 
+                    WHERE c_w_id = %s AND c_d_id = %s AND c_id = %s
+                    FOR UPDATE
+                """
+                cur.execute(customer_query, (warehouse_id, district_id, customer_id))
+                customer_result = cur.fetchone()
+                if not customer_result:
+                    return {"success": False, "error": "Customer not found"}
+                
+                customer_info = {
+                    'c_first': customer_result[0],
+                    'c_middle': customer_result[1],
+                    'c_last': customer_result[2],
+                    'c_balance': float(customer_result[3]) if customer_result[3] is not None else 0.0,
+                    'c_ytd_payment': float(customer_result[4]) if customer_result[4] is not None else 0.0,
+                    'c_payment_cnt': int(customer_result[5]) if customer_result[5] is not None else 0,
+                    'c_credit': customer_result[6],
+                    'c_discount': float(customer_result[7]) if customer_result[7] is not None else 0.0
+                }
+                
+                # Get warehouse information
+                warehouse_query = """
+                    SELECT w_name, w_street_1, w_street_2, w_city, w_state, w_zip, w_tax, w_ytd
+                    FROM warehouse 
+                    WHERE w_id = %s
+                    FOR UPDATE
+                """
+                cur.execute(warehouse_query, (warehouse_id,))
+                warehouse_result = cur.fetchone()
+                if not warehouse_result:
+                    return {"success": False, "error": "Warehouse not found"}
+                
+                warehouse_info = {
+                    'w_name': warehouse_result[0],
+                    'w_street_1': warehouse_result[1],
+                    'w_street_2': warehouse_result[2],
+                    'w_city': warehouse_result[3],
+                    'w_state': warehouse_result[4],
+                    'w_zip': warehouse_result[5],
+                    'w_tax': float(warehouse_result[6]) if warehouse_result[6] is not None else 0.0,
+                    'w_ytd': float(warehouse_result[7]) if warehouse_result[7] is not None else 0.0
+                }
+                
+                # Get district information
+                district_query = """
+                    SELECT d_name, d_street_1, d_street_2, d_city, d_state, d_zip, d_tax, d_ytd
+                    FROM district 
+                    WHERE d_w_id = %s AND d_id = %s
+                    FOR UPDATE
+                """
+                cur.execute(district_query, (warehouse_id, district_id))
+                district_result = cur.fetchone()
+                if not district_result:
+                    return {"success": False, "error": "District not found"}
+                
+                district_info = {
+                    'd_name': district_result[0],
+                    'd_street_1': district_result[1],
+                    'd_street_2': district_result[2],
+                    'd_city': district_result[3],
+                    'd_state': district_result[4],
+                    'd_zip': district_result[5],
+                    'd_tax': float(district_result[6]) if district_result[6] is not None else 0.0,
+                    'd_ytd': float(district_result[7]) if district_result[7] is not None else 0.0
+                }
+                
+                # Update customer balance and payment statistics
+                new_balance = customer_info['c_balance'] - amount
+                new_ytd_payment = customer_info['c_ytd_payment'] + amount
+                new_payment_cnt = customer_info['c_payment_cnt'] + 1
+                
+                update_customer_query = """
+                    UPDATE customer 
+                    SET c_balance = %s, c_ytd_payment = %s, c_payment_cnt = %s
+                    WHERE c_w_id = %s AND c_d_id = %s AND c_id = %s
+                """
+                cur.execute(update_customer_query, (
+                    new_balance, new_ytd_payment, new_payment_cnt,
+                    warehouse_id, district_id, customer_id
+                ))
+                
+                # Update warehouse YTD
+                new_warehouse_ytd = warehouse_info['w_ytd'] + amount
+                update_warehouse_query = """
+                    UPDATE warehouse 
+                    SET w_ytd = %s
+                    WHERE w_id = %s
+                """
+                cur.execute(update_warehouse_query, (new_warehouse_ytd, warehouse_id))
+                
+                # Update district YTD
+                new_district_ytd = district_info['d_ytd'] + amount
+                update_district_query = """
+                    UPDATE district 
+                    SET d_ytd = %s
+                    WHERE d_w_id = %s AND d_id = %s
+                """
+                cur.execute(update_district_query, (new_district_ytd, warehouse_id, district_id))
+                
+                # Create payment history record
+                # Generate payment data string (truncate to fit varchar(24) limit)
+                payment_data = f"{customer_info['c_first']} paid {amount:.2f}"
+                if len(payment_data) > 24:
+                    payment_data = payment_data[:21] + "..."
+                
+                insert_history_query = """
+                    INSERT INTO history (h_c_id, h_c_d_id, h_c_w_id, h_d_id, h_w_id, h_date, h_amount, h_data)
+                    VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, %s)
+                """
+                cur.execute(insert_history_query, (
+                    customer_id, district_id, warehouse_id, district_id, warehouse_id,
+                    amount, payment_data
+                ))
+                
+                # Commit transaction
+                self.connection.commit()
+                
+                return {
+                    "success": True,
+                    "warehouse_id": warehouse_id,
+                    "district_id": district_id,
+                    "customer_id": customer_id,
+                    "amount": amount,
+                    "customer_info": {
+                        "name": f"{customer_info['c_first']} {customer_info['c_middle']} {customer_info['c_last']}",
+                        "old_balance": customer_info['c_balance'],
+                        "new_balance": new_balance,
+                        "ytd_payment": new_ytd_payment,
+                        "payment_count": new_payment_cnt
+                    },
+                    "warehouse_info": {
+                        "name": warehouse_info['w_name'],
+                        "address": f"{warehouse_info['w_street_1']}, {warehouse_info['w_city']}, {warehouse_info['w_state']} {warehouse_info['w_zip']}"
+                    },
+                    "district_info": {
+                        "name": district_info['d_name'],
+                        "address": f"{district_info['d_street_1']}, {district_info['d_city']}, {district_info['d_state']} {district_info['d_zip']}"
+                    },
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                }
+                
+        except Exception as e:
+            # Rollback transaction on error
+            try:
+                self.connection.rollback()
+            except Exception:
+                pass
+            logger.error(f"Payment transaction failed: {str(e)}")
             return {"success": False, "error": str(e)}

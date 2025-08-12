@@ -45,7 +45,7 @@ class InventoryService:
     def get_inventory_paginated(
         self,
         warehouse_id: Optional[int] = None,
-        low_stock_threshold: int = 10,
+        low_stock_threshold: int = 100,  # 提高默认阈值到100
         item_search: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,

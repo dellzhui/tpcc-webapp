@@ -215,7 +215,7 @@ def inventory():
 
         # Get filter parameters
         warehouse_id = request.args.get("warehouse_id", type=int)
-        low_stock_threshold = request.args.get("threshold", 10, type=int)
+        low_stock_threshold = request.args.get("threshold", 100, type=int)  # 提高默认阈值到100
         item_search = request.args.get("item_search")
         limit = request.args.get("limit", 100, type=int)
         page = request.args.get("page", 1, type=int)
@@ -316,7 +316,7 @@ def payments():
             f"   ✅ Retrieved {len(payments_result.get('payments', []))} payment records out of {payments_result.get('total_count', 0)} total"
         )
 
-                # Get warehouses for filter dropdown
+        # Get warehouses for filter dropdown
         logger.info("   Fetching warehouses for dropdown...")
         warehouses_result = analytics_service.get_warehouses()
         warehouses = warehouses_result.get("warehouses", []) if warehouses_result.get("success") else []
