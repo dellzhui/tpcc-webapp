@@ -56,6 +56,7 @@ def initialize_services():
 
         # Initialize services without ORM session
         order_service = OrderService(db_connector, region_name)
+        logger.warning("######################exec inventory_service")
         inventory_service = InventoryService(db_connector)
         payment_service = PaymentService(db_connector)
         analytics_service = AnalyticsService(db_connector)

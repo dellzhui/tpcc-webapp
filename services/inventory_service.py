@@ -51,6 +51,7 @@ class InventoryService:
         offset: int = 0,
     ) -> Dict[str, Any]:
         """Get inventory data with pagination"""
+        logger.warning("Get inventory data with pagination")
         try:
             return self.db.get_inventory_paginated(
                 warehouse_id, low_stock_threshold, item_search, limit, offset

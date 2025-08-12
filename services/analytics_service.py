@@ -181,6 +181,49 @@ class AnalyticsService:
                 else "Unknown",
                 "orders": [],
             }
+    
+    def get_warehouses(self, limit: int = 10) -> Dict[str, Any]:
+        """
+        Get recent orders for the webapp
+
+        Args:
+            limit: Maximum number of orders to return
+
+        Returns:
+            dict: Orders data or error information
+        """
+        if not self.connector:
+            return {"error": "No database connector available", "warehouses": []}
+
+        try:
+            if not self.connector.test_connection():
+                return {"error": "Database connection failed", "warehouses": []}
+
+            query = f"""
+                SELECT w_id, w_name, w_street_1, w_street_2, w_city, w_state, w_zip, w_tax, w_ytd
+                FROM warehouse
+                ORDER BY w_id ASC
+                LIMIT {limit}
+            """
+
+            result = self.connector.execute_query(query)
+
+            return {
+                "success": True,
+                "provider": self.connector.get_provider_name(),
+                "warehouses": result,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get warehouses: {str(e)}")
+            return {
+                "error": str(e),
+                "provider": self.connector.get_provider_name()
+                if self.connector
+                else "Unknown",
+                "warehouses": [],
+            }
+
 
     def get_inventory(self, limit: int = 10) -> Dict[str, Any]:
         """
