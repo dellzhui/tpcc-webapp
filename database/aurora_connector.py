@@ -216,7 +216,7 @@ class AuroraDSQLConnector(BaseDatabaseConnector):
                 # If SELECT, fetch results
                 if cur.description:
                     results = cur.fetchall()
-                    logger.info(f"Query executed. Rows returned: {len(results)}")
+                    logger.info(f"Query executed. Rows returned: {results}")
                     results = [dict(r) for r in results]
                 else:
                     results = []
