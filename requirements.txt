@@ -8,6 +8,8 @@ SQLAlchemy==2.0.36
 Flask-Migrate==4.0.7
 
 # Database connectors
+boto3==1.40.7
+psycopg2==2.9.10
 
 # Additional utilities
 python-dotenv==1.0.1  # Environment variable management
