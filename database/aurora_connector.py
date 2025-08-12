@@ -734,3 +734,276 @@ class AuroraDSQLConnector(BaseDatabaseConnector):
                 self.connection = None
         except Exception as e:
             logger.error(f"Connection cleanup failed: {str(e)}")
+
+    def execute_new_order(
+        self,
+        warehouse_id: int,
+        district_id: int,
+        customer_id: int,
+        items: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Execute TPC-C New Order transaction
+        
+        This method implements the TPC-C New Order transaction which:
+        1. Gets the next order ID for the district
+        2. Creates an order record
+        3. Creates order line items
+        4. Updates stock quantities
+        5. Updates customer information
+        6. Creates a new_order record
+        
+        Args:
+            warehouse_id: Warehouse ID
+            district_id: District ID
+            customer_id: Customer ID
+            items: List of items with item_id, supply_w_id, quantity, and price
+            
+        Returns:
+            Dict with success status and order details
+        """
+        self._ensure_connection()
+        
+        try:
+            # Start transaction
+            with self.connection.cursor() as cur:
+                # Get the next order ID for this district
+                next_order_id_query = """
+                    SELECT d_next_o_id 
+                    FROM district 
+                    WHERE d_w_id = %s AND d_id = %s
+                    FOR UPDATE
+                """
+                cur.execute(next_order_id_query, (warehouse_id, district_id))
+                result = cur.fetchone()
+                if not result:
+                    return {"success": False, "error": "District not found"}
+                
+                order_id = result[0]
+                
+                # Get customer information
+                customer_query = """
+                    SELECT c_first, c_middle, c_last, c_credit, c_discount, c_balance
+                    FROM customer 
+                    WHERE c_w_id = %s AND c_d_id = %s AND c_id = %s
+                """
+                cur.execute(customer_query, (warehouse_id, district_id, customer_id))
+                customer_result = cur.fetchone()
+                if not customer_result:
+                    return {"success": False, "error": "Customer not found"}
+                
+                customer_info = {
+                    'c_first': customer_result[0],
+                    'c_middle': customer_result[1], 
+                    'c_last': customer_result[2],
+                    'c_credit': customer_result[3],
+                    'c_discount': customer_result[4],
+                    'c_balance': customer_result[5]
+                }
+                
+                # Calculate order total and process items
+                order_total = 0.0
+                all_local = 1  # Assume all items are local initially
+                order_lines = []
+                
+                for i, item_data in enumerate(items, 1):
+                    item_id = item_data.get('item_id')
+                    supply_w_id = item_data.get('supply_w_id', warehouse_id)
+                    quantity = item_data.get('quantity', 1)
+                    
+                    # Check if item is from different warehouse
+                    if supply_w_id != warehouse_id:
+                        all_local = 0
+                    
+                    # Get item information
+                    item_query = """
+                        SELECT i_name, i_price, i_data 
+                        FROM item 
+                        WHERE i_id = %s
+                    """
+                    cur.execute(item_query, (item_id,))
+                    item_result = cur.fetchone()
+                    if not item_result:
+                        return {"success": False, "error": f"Item {item_id} not found"}
+                    
+                    item_name = item_result[0]
+                    item_price = float(item_result[1]) if item_result[1] is not None else 0.0
+                    item_data_str = item_result[2]
+                    
+                    # Get stock information and update quantity
+                    stock_query = """
+                        SELECT s_quantity, s_data, s_dist_01, s_dist_02, s_dist_03, 
+                               s_dist_04, s_dist_05, s_dist_06, s_dist_07, s_dist_08, 
+                               s_dist_09, s_dist_10
+                        FROM stock 
+                        WHERE s_w_id = %s AND s_i_id = %s
+                        FOR UPDATE
+                    """
+                    cur.execute(stock_query, (supply_w_id, item_id))
+                    stock_result = cur.fetchone()
+                    if not stock_result:
+                        return {"success": False, "error": f"Stock not found for item {item_id} in warehouse {supply_w_id}"}
+                    
+                    current_quantity = int(stock_result[0]) if stock_result[0] is not None else 0
+                    stock_data = stock_result[1]
+                    
+                    # Calculate adjusted quantity
+                    adjusted_quantity = current_quantity - quantity
+                    if adjusted_quantity < 10:
+                        adjusted_quantity += 91  # Restock threshold
+                    
+                    # Update stock
+                    update_stock_query = """
+                        UPDATE stock 
+                        SET s_quantity = %s, s_ytd = s_ytd + %s, s_order_cnt = s_order_cnt + 1
+                        WHERE s_w_id = %s AND s_i_id = %s
+                    """
+                    cur.execute(update_stock_query, (adjusted_quantity, quantity, supply_w_id, item_id))
+                    
+                    # Calculate line amount
+                    line_amount = float(quantity * item_price)
+                    order_total += line_amount
+                    
+                    # Get district info for remote order
+                    district_info = None
+                    if supply_w_id != warehouse_id:
+                        district_query = """
+                            SELECT d_tax, d_ytd, d_next_o_id
+                            FROM district 
+                            WHERE d_w_id = %s AND d_id = %s
+                        """
+                        cur.execute(district_query, (supply_w_id, district_id))
+                        district_result = cur.fetchone()
+                        if district_result:
+                            district_info = {
+                                'd_tax': district_result[0],
+                                'd_ytd': district_result[1],
+                                'd_next_o_id': district_result[2]
+                            }
+                    
+                    # Get the appropriate dist info based on district_id
+                    dist_key = f"s_dist_{district_id:02d}"
+                    # stock_result indices: 0=s_quantity, 1=s_data, 2=s_dist_01, 3=s_dist_02, ..., 11=s_dist_10
+                    dist_info = stock_result[1 + district_id] if 1 <= district_id <= 10 else stock_result[1]
+                    
+                    order_lines.append({
+                        'ol_number': i,
+                        'ol_i_id': item_id,
+                        'ol_supply_w_id': supply_w_id,
+                        'ol_quantity': quantity,
+                        'ol_amount': line_amount,
+                        'ol_dist_info': dist_info
+                    })
+                
+                # Calculate total with tax and discount
+                warehouse_query = """
+                    SELECT w_tax 
+                    FROM warehouse 
+                    WHERE w_id = %s
+                """
+                cur.execute(warehouse_query, (warehouse_id,))
+                warehouse_result = cur.fetchone()
+                if not warehouse_result:
+                    return {"success": False, "error": "Warehouse not found"}
+                
+                w_tax = float(warehouse_result[0]) if warehouse_result[0] is not None else 0.0
+                
+                district_query = """
+                    SELECT d_tax 
+                    FROM district 
+                    WHERE d_w_id = %s AND d_id = %s
+                """
+                cur.execute(district_query, (warehouse_id, district_id))
+                district_result = cur.fetchone()
+                if not district_result:
+                    return {"success": False, "error": "District not found"}
+                
+                d_tax = float(district_result[0]) if district_result[0] is not None else 0.0
+                
+                # Calculate final total
+                total_with_tax = order_total * (1 + d_tax + w_tax)
+                final_total = total_with_tax * (1 - float(customer_info['c_discount']) if customer_info['c_discount'] is not None else 0.0)
+                
+                # Update customer balance and payment info
+                update_customer_query = """
+                    UPDATE customer 
+                    SET c_balance = c_balance + %s, c_ytd_payment = c_ytd_payment + %s, c_payment_cnt = c_payment_cnt + 1
+                    WHERE c_w_id = %s AND c_d_id = %s AND c_id = %s
+                """
+                cur.execute(update_customer_query, (final_total, final_total, warehouse_id, district_id, customer_id))
+                
+                # Update district YTD
+                update_district_query = """
+                    UPDATE district 
+                    SET d_ytd = d_ytd + %s
+                    WHERE d_w_id = %s AND d_id = %s
+                """
+                cur.execute(update_district_query, (final_total, warehouse_id, district_id))
+                
+                # Update warehouse YTD
+                update_warehouse_query = """
+                    UPDATE warehouse 
+                    SET w_ytd = w_ytd + %s
+                    WHERE w_id = %s
+                """
+                cur.execute(update_warehouse_query, (final_total, warehouse_id))
+                
+                # Increment next order ID
+                increment_order_id_query = """
+                    UPDATE district 
+                    SET d_next_o_id = d_next_o_id + 1
+                    WHERE d_w_id = %s AND d_id = %s
+                """
+                cur.execute(increment_order_id_query, (warehouse_id, district_id))
+                
+                # Create order record
+                insert_order_query = """
+                    INSERT INTO orders (o_id, o_d_id, o_w_id, o_c_id, o_entry_d, o_carrier_id, o_ol_cnt, o_all_local)
+                    VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP, NULL, %s, %s)
+                """
+                cur.execute(insert_order_query, (order_id, district_id, warehouse_id, customer_id, len(items), all_local))
+                
+                # Create order line records
+                for line in order_lines:
+                    insert_order_line_query = """
+                        INSERT INTO order_line (ol_o_id, ol_d_id, ol_w_id, ol_number, ol_i_id, ol_supply_w_id, ol_delivery_d, ol_quantity, ol_amount, ol_dist_info)
+                        VALUES (%s, %s, %s, %s, %s, %s, NULL, %s, %s, %s)
+                    """
+                    cur.execute(insert_order_line_query, (
+                        order_id, district_id, warehouse_id, line['ol_number'], 
+                        line['ol_i_id'], line['ol_supply_w_id'], line['ol_quantity'], 
+                        line['ol_amount'], line['ol_dist_info']
+                    ))
+                
+                # Create new_order record
+                insert_new_order_query = """
+                    INSERT INTO new_order (no_o_id, no_d_id, no_w_id)
+                    VALUES (%s, %s, %s)
+                """
+                cur.execute(insert_new_order_query, (order_id, district_id, warehouse_id))
+                
+                # Commit transaction
+                self.connection.commit()
+                
+                return {
+                    "success": True,
+                    "order_id": order_id,
+                    "warehouse_id": warehouse_id,
+                    "district_id": district_id,
+                    "customer_id": customer_id,
+                    "customer_info": customer_info,
+                    "order_total": order_total,
+                    "final_total": final_total,
+                    "order_lines": order_lines,
+                    "all_local": all_local,
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                }
+                
+        except Exception as e:
+            # Rollback transaction on error
+            try:
+                self.connection.rollback()
+            except Exception:
+                pass
+            logger.error(f"New order transaction failed: {str(e)}")
+            return {"success": False, "error": str(e)}
